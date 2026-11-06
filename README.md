@@ -1,4 +1,6 @@
-# companion-module-[replace with module name]
+# companion-module-alto-tmd16
+
+Companion module for the Alto Professional TMD16 mixer.
 
 See [HELP.md](./companion/HELP.md) and [LICENSE](./LICENSE)
 
