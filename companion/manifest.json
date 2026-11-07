@@ -5,7 +5,7 @@
 	"name": "alto-tmd16",
 	"shortname": "tmd16",
 	"description": "Control the Alto Professional TMD16 mixer over the network",
-	"version": "0.0.0",
+	"version": "0.1.0",
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-alto-tmd16.git",
 	"bugs": "https://github.com/bitfocus/companion-module-alto-tmd16/issues",
