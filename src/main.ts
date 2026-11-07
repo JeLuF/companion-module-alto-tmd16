@@ -31,6 +31,9 @@ export type ModuleSchema = {
 
 export { UpgradeScripts }
 
+/** Pause between packets written to the device */
+const SEND_GAP_MS = 20
+
 export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	config!: ModuleConfig // Setup in init()
 
@@ -42,6 +45,8 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	#tcp: TCPHelper | undefined
 	#parser = new PacketParser()
 	#pollTimer: NodeJS.Timeout | undefined
+	#sendTimer: NodeJS.Timeout | undefined
+	#sendQueue: Buffer[] = []
 	#meterTimer: NodeJS.Timeout | undefined
 
 	constructor(internal: unknown) {
@@ -100,6 +105,9 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		clearInterval(this.#meterTimer)
 		this.#pollTimer = undefined
 		this.#meterTimer = undefined
+		clearTimeout(this.#sendTimer)
+		this.#sendTimer = undefined
+		this.#sendQueue = []
 		this.#tcp?.destroy()
 		this.#tcp = undefined
 		this.#parser.reset()
@@ -148,19 +156,35 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		}
 	}
 
-	#send(data: Buffer): void {
+	/**
+	 * The device only answers the first message of a TCP segment, so every packet is written
+	 * separately, with a short pause in between.
+	 */
+	#send(...packets: Buffer[]): void {
 		if (!this.#tcp?.isConnected) return
-		this.#tcp.sendAsync(data).catch((err: Error) => this.log('warn', `Send failed: ${err.message}`))
+		this.#sendQueue.push(...packets)
+		if (!this.#sendTimer) this.#drainQueue()
 	}
 
-	/** Request all faders, mutes and the current preset in one write. */
+	#drainQueue(): void {
+		this.#sendTimer = undefined
+		const packet = this.#sendQueue.shift()
+		if (!packet) return
+		if (!this.#tcp?.isConnected) {
+			this.#sendQueue = []
+			return
+		}
+		this.#tcp.sendAsync(packet).catch((err: Error) => this.log('warn', `Send failed: ${err.message}`))
+		this.#sendTimer = setTimeout(() => this.#drainQueue(), SEND_GAP_MS)
+	}
+
+	/** Request all faders, mutes and the current preset. */
 	queryState(): void {
+		if (this.#sendQueue.length > 0) return // previous query still in flight
 		this.#send(
-			Buffer.concat([
-				...FADER_CHANNELS.map((c) => buildPacket(Cmd.GetGain, c.id)),
-				...CHANNELS.map((c) => buildPacket(Cmd.GetMute, c.id)),
-				buildPacket(Cmd.GetPreset),
-			]),
+			...FADER_CHANNELS.map((c) => buildPacket(Cmd.GetGain, c.id)),
+			...CHANNELS.map((c) => buildPacket(Cmd.GetMute, c.id)),
+			buildPacket(Cmd.GetPreset),
 		)
 	}
 
@@ -249,18 +273,18 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	}
 
 	#writeFader(channel: number, raw: number): void {
-		this.#send(Buffer.concat([buildPacket(Cmd.SetGain, channel, raw), buildPacket(Cmd.GetGain, channel)]))
+		this.#send(buildPacket(Cmd.SetGain, channel, raw), buildPacket(Cmd.GetGain, channel))
 		this.#updateGain(channel, raw) // optimistic; the read-back above corrects it if needed
 	}
 
 	setMute(channel: number, state: 'mute' | 'unmute' | 'toggle'): void {
 		const muted = state === 'toggle' ? !this.mutes.get(channel) : state === 'mute'
-		this.#send(Buffer.concat([buildPacket(Cmd.SetMute, channel, muted ? 1 : 0), buildPacket(Cmd.GetMute, channel)]))
+		this.#send(buildPacket(Cmd.SetMute, channel, muted ? 1 : 0), buildPacket(Cmd.GetMute, channel))
 		this.#updateMute(channel, muted)
 	}
 
 	recallPreset(preset: number): void {
-		this.#send(Buffer.concat([buildPacket(Cmd.RecallPreset, preset)]))
+		this.#send(buildPacket(Cmd.RecallPreset, preset))
 		// A preset changes faders and mutes, so re-read everything shortly after
 		setTimeout(() => this.queryState(), 300)
 		this.#updatePreset(preset)
